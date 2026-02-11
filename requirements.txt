@@ -4,3 +4,4 @@ pandas
 yfinance
 openpyxl
 requests
+python-telegram-bot==20.5
