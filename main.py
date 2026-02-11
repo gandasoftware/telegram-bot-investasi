@@ -1,41 +1,21 @@
 # ============================================================
-# TELEGRAM BUFFETT DASHBOARD – FULL VERSION
-# Trigger: /dashboard
+# GANDA DASHBOARD INVESTASI - TELEGRAM BOT
+# COMMAND: /dashboard
 # ============================================================
 
+import os
 import pandas as pd
 import yfinance as yf
-import requests
-import time
 from datetime import datetime
-from flask import Flask, request
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ============================================================
-# CONFIG TELEGRAM
+# CONFIG
 # ============================================================
 
-TOKEN = "ISI_TOKEN_KAMU"
-CHAT_ID = "ISI_CHAT_ID_KAMU"
-
-app = Flask(__name__)
-
-# ============================================================
-# TELEGRAM SEND (AUTO SPLIT 4096 CHAR)
-# ============================================================
-
-def kirim_telegram(teks):
-    MAX_LEN = 4000
-
-    for i in range(0, len(teks), MAX_LEN):
-        chunk = teks[i:i+MAX_LEN]
-
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = {
-            "chat_id": CHAT_ID,
-            "text": f"<pre>{chunk}</pre>",
-            "parse_mode": "HTML"
-        }
-        requests.post(url, data=data)
+TOKEN = os.getenv("TOKEN")  # Ambil dari Railway Variables
+EXCEL_FILE = "portfolio.xlsx"
 
 # ============================================================
 # HELPERS
@@ -66,140 +46,108 @@ def get_ihsg():
         return 0.0
 
 # ============================================================
-# DASHBOARD FUNCTION
+# COMMAND /dashboard
 # ============================================================
 
-def generate_dashboard():
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    EXCEL_FILE = "portfolio.xlsx"
+    try:
+        config_df = pd.read_excel(EXCEL_FILE, sheet_name="Config")
+        config = dict(zip(config_df["Parameter"], config_df["Value"]))
 
-    config_df = pd.read_excel(EXCEL_FILE, sheet_name="Config")
-    config = dict(zip(config_df["Parameter"], config_df["Value"]))
+        GDP_INDONESIA = to_float(config.get("GDP_INDONESIA_USD", 1.39e12))
+        MARKET_CAP_IDX = to_float(config.get("MARKET_CAP_IDX_USD", 8e11))
+        MAX_BOBOT_SAHAM = to_float(config.get("MAX_BOBOT_SAHAM", 20))
 
-    saham_df = pd.read_excel(EXCEL_FILE, sheet_name="Saham")
-    cash_df = pd.read_excel(EXCEL_FILE, sheet_name="Cash")
+        saham_df = pd.read_excel(EXCEL_FILE, sheet_name="Saham")
+        cash_df = pd.read_excel(EXCEL_FILE, sheet_name="Cash")
+        cash = float(pd.to_numeric(cash_df.iloc[:,1], errors="coerce").dropna().iloc[-1])
 
-    cash = float(pd.to_numeric(cash_df.iloc[:,1], errors="coerce").dropna().iloc[-1])
+        rows = []
+        total_beli = 0
+        total_now = 0
 
-    GDP_INDONESIA = to_float(config.get("GDP_INDONESIA_USD", 1.39e12))
-    MARKET_CAP_IDX = to_float(config.get("MARKET_CAP_IDX_USD", 8e11))
-    MAX_BOBOT_SAHAM = to_float(config.get("MAX_BOBOT_SAHAM", 20))
+        for _, r in saham_df.iterrows():
+            kode = r["Kode"]
+            lot = int(r["Lot"])
+            harga_beli = to_float(r["Harga Beli"])
+            harga_now = get_price(f"{kode}.JK", fallback=harga_beli)
 
-    rows = []
-    total_beli = 0
-    total_now = 0
+            nilai_beli = harga_beli * lot * 100
+            nilai_now = harga_now * lot * 100
+            gain = nilai_now - nilai_beli
+            gain_pct = (gain / nilai_beli * 100) if nilai_beli else 0
 
-    for _, r in saham_df.iterrows():
+            rows.append({
+                "Kode": kode,
+                "Lot": lot,
+                "Harga Beli": harga_beli,
+                "Nilai Beli": nilai_beli,
+                "Harga Now": harga_now,
+                "Nilai Now": nilai_now,
+                "Gain": gain,
+                "Gain %": gain_pct
+            })
 
-        kode = r["Kode"]
-        lot = int(r["Lot"])
-        harga_beli = to_float(r["Harga Beli"])
+            total_beli += nilai_beli
+            total_now += nilai_now
 
-        harga_now = get_price(f"{kode}.JK", fallback=harga_beli)
+        df = pd.DataFrame(rows)
+        df["Bobot"] = df["Nilai Now"] / total_now * 100 if total_now else 0
 
-        nilai_beli = harga_beli * lot * 100
-        nilai_now = harga_now * lot * 100
-        gain = nilai_now - nilai_beli
-        gain_pct = (gain / nilai_beli * 100) if nilai_beli else 0
+        total_porto = total_now + cash
+        porsi_saham = total_now / total_porto * 100 if total_porto else 0
+        buffett = MARKET_CAP_IDX / GDP_INDONESIA * 100
+        ihsg_last = get_ihsg()
 
-        rows.append({
-            "Kode": kode,
-            "Lot": lot,
-            "Harga Beli": harga_beli,
-            "Nilai Beli": nilai_beli,
-            "Harga Now": harga_now,
-            "Nilai Now": nilai_now,
-            "Gain": gain,
-            "Gain %": gain_pct
-        })
+        if buffett < 60:
+            kondisi_pasar = "MURAH"
+            target_buffett = 85
+        elif buffett < 80:
+            kondisi_pasar = "WAJAR"
+            target_buffett = 75
+        else:
+            kondisi_pasar = "MAHAL"
+            target_buffett = 65
 
-        total_beli += nilai_beli
-        total_now += nilai_now
+        aksi = "TAMBAH SAHAM" if porsi_saham < target_buffett else "TAHAN / REBALANCE"
 
-    df = pd.DataFrame(rows)
-    df["Bobot"] = df["Nilai Now"] / total_now * 100 if total_now else 0
+        WIDTH = 60
+        now_str = datetime.now().strftime("%d %b %Y %H:%M")
 
-    total_porto = total_now + cash
-    porsi_saham = total_now / total_porto * 100 if total_porto else 0
-    porsi_cash = 100 - porsi_saham
-    buffett = MARKET_CAP_IDX / GDP_INDONESIA * 100
+        output = ""
+        output += "="*WIDTH + "\n"
+        output += "GANDA DASHBOARD INVESTASI".center(WIDTH) + "\n"
+        output += "="*WIDTH + "\n\n"
 
-    if buffett < 60:
-        kondisi_pasar = "MURAH"
-        target_buffett = 85
-    elif buffett < 80:
-        kondisi_pasar = "WAJAR"
-        target_buffett = 75
-    else:
-        kondisi_pasar = "MAHAL"
-        target_buffett = 65
+        output += f"Analisa dijalankan : {now_str}\n"
+        output += "-"*WIDTH + "\n"
+        output += f"IHSG Terakhir      : {ihsg_last:,.2f}\n"
+        output += f"Kondisi Pasar      : {kondisi_pasar}\n"
+        output += f"Buffett Indicator  : {buffett:.2f} %\n"
 
-    aksi = "TAMBAH SAHAM" if porsi_saham < target_buffett - 2 else "TAHAN / REBALANCE"
+        output += "-"*WIDTH + "\n"
+        output += f"Total Saham        : {rupiah(total_now)}\n"
+        output += f"Cash               : {rupiah(cash)}\n"
+        output += f"Total Portofolio   : {rupiah(total_porto)}\n"
 
-    ihsg_last = get_ihsg()
-    now_str = datetime.now().strftime("%d %b %Y %H:%M")
+        output += "-"*WIDTH + "\n"
+        output += f"Porsi Saham        : {porsi_saham:.2f} %\n"
+        output += f"Target Saham       : {target_buffett} %\n"
+        output += "-"*WIDTH + "\n"
+        output += f"REKOMENDASI AKSI   : {aksi}\n\n"
 
-    WIDTH = 60
-    output = ""
+        await update.message.reply_text(f"<pre>{output}</pre>", parse_mode="HTML")
 
-    output += "="*WIDTH + "\n"
-    output += "GANDA DASHBOARD INVESTASI".center(WIDTH) + "\n"
-    output += "="*WIDTH + "\n\n"
-
-    output += f"Analisa dijalankan : {now_str}\n"
-    output += "-"*WIDTH + "\n"
-    output += f"IHSG Terakhir      : {ihsg_last:,.2f}\n"
-    output += f"Kondisi Pasar      : {kondisi_pasar}\n"
-    output += f"Buffett Indicator  : {buffett:.2f} %\n"
-    output += "-"*WIDTH + "\n"
-    output += f"Total Saham        : {rupiah(total_now)}\n"
-    output += f"Cash               : {rupiah(cash)}\n"
-    output += f"Total Portofolio   : {rupiah(total_porto)}\n"
-    output += "-"*WIDTH + "\n"
-    output += f"Porsi Saham        : {porsi_saham:.2f} %\n"
-    output += f"Target Saham       : {target_buffett} %\n"
-    output += "-"*WIDTH + "\n"
-    output += f"REKOMENDASI AKSI   : {aksi}\n\n"
-
-    output += "="*WIDTH + "\n"
-    output += "DETAIL PORTOFOLIO\n"
-    output += "="*WIDTH + "\n"
-
-    for _, r in df.iterrows():
-        output += (
-            f"{r['Kode']} | "
-            f"Lot:{r['Lot']} | "
-            f"Now:{r['Harga Now']:,.0f} | "
-            f"G/L:{r['Gain']:,.0f} ({r['Gain %']:.2f}%)\n"
-        )
-
-    output += "\nTOTAL GAIN : "
-    total_gain = total_now - total_beli
-    total_gain_pct = total_gain / total_beli * 100 if total_beli else 0
-    output += f"{rupiah(total_gain)} ({total_gain_pct:.2f}%)\n"
-
-    return output
+    except Exception as e:
+        await update.message.reply_text(f"Terjadi error:\n{e}")
 
 # ============================================================
-# WEBHOOK
+# MAIN
 # ============================================================
 
-@app.route("/", methods=["POST"])
-def webhook():
-    data = request.get_json()
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("dashboard", dashboard))
 
-    if "message" in data:
-        text = data["message"].get("text", "")
-
-        if text == "/dashboard":
-            hasil = generate_dashboard()
-            kirim_telegram(hasil)
-
-    return "OK"
-
-# ============================================================
-# RUN
-# ============================================================
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+print("Bot running...")
+app.run_polling()
