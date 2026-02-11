@@ -3,4 +3,5 @@ pandas
 yfinance
 openpyxl
 requests
-
+flask
+gunicorn
