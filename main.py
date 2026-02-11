@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import yfinance as yf
 from flask import Flask, request
-from openpyxl import load_workbook
 from datetime import datetime
 
 # ============================================================
@@ -13,8 +12,11 @@ from datetime import datetime
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+if not TOKEN or not CHAT_ID:
+    raise ValueError("TOKEN atau CHAT_ID belum diset di Railway Variables")
+
 # ============================================================
-# FLASK APP (WEBHOOK RAILWAY)
+# FLASK APP
 # ============================================================
 
 app = Flask(__name__)
@@ -38,23 +40,29 @@ def kirim_telegram(pesan):
         "chat_id": CHAT_ID,
         "text": pesan
     }
-    requests.post(url, data=data)
+    requests.post(url, data=data, timeout=15)
 
 # ============================================================
-# DATA MARKET
+# MARKET DATA
 # ============================================================
 
 def get_price(symbol, fallback=0):
     try:
         data = yf.Ticker(symbol)
-        return float(data.history(period="1d")["Close"].iloc[-1])
+        hist = data.history(period="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+        return fallback
     except:
         return fallback
 
 def get_ihsg():
     try:
         data = yf.Ticker("^JKSE")
-        return float(data.history(period="1d")["Close"].iloc[-1])
+        hist = data.history(period="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+        return 0
     except:
         return 0
 
@@ -92,9 +100,12 @@ def generate_dashboard():
 
     EXCEL_FILE = "portfolio.xlsx"
 
-    saham_df = pd.read_excel(EXCEL_FILE, sheet_name="Saham")
-    cash_df = pd.read_excel(EXCEL_FILE, sheet_name="Cash")
-    config_df = pd.read_excel(EXCEL_FILE, sheet_name="Config")
+    try:
+        saham_df = pd.read_excel(EXCEL_FILE, sheet_name="Saham")
+        cash_df = pd.read_excel(EXCEL_FILE, sheet_name="Cash")
+        config_df = pd.read_excel(EXCEL_FILE, sheet_name="Config")
+    except Exception as e:
+        return f"ERROR baca Excel: {e}"
 
     config = dict(zip(config_df["Parameter"], config_df["Value"]))
     MAX_BOBOT_SAHAM = to_float(config.get("MAX_BOBOT_SAHAM", 20))
@@ -112,7 +123,6 @@ def generate_dashboard():
     total_now = 0
 
     for _, r in saham_df.iterrows():
-
         kode = r["Kode"]
         lot = int(r["Lot"])
         harga_beli = to_float(r["Harga Beli"])
@@ -137,8 +147,11 @@ def generate_dashboard():
         total_beli += nilai_beli
         total_now += nilai_now
 
+    if total_now == 0:
+        return "Portofolio kosong."
+
     df = pd.DataFrame(rows)
-    df["Bobot"] = df["Nilai Now"] / total_now * 100 if total_now else 0
+    df["Bobot"] = df["Nilai Now"] / total_now * 100
 
     total_porto = total_now + cash
     porsi_saham = total_now / total_porto * 100 if total_porto else 0
@@ -160,102 +173,46 @@ def generate_dashboard():
     now_str = datetime.now().strftime("%d %b %Y %H:%M")
 
     output = ""
-
-    output += "="*60 + "\n"
-    output += "GANDA DASHBOARD INVESTASI".center(60) + "\n"
-    output += "="*60 + "\n\n"
-
-    output += f"Analisa dijalankan : {now_str}\n"
-    output += "-"*60 + "\n"
-    output += f"IHSG Terakhir      : {ihsg:,.2f}\n"
-    output += f"Kondisi Pasar      : {kondisi}\n"
-    output += f"Buffett Indicator  : {buffett:.2f} %\n"
-    output += "-"*60 + "\n"
-    output += f"Total Saham        : {rupiah(total_now)}\n"
-    output += f"Cash               : {rupiah(cash)}\n"
-    output += f"Total Portofolio   : {rupiah(total_porto)}\n"
-    output += "-"*60 + "\n"
-    output += f"Porsi Saham        : {porsi_saham:.2f} %\n"
-    output += f"Target Saham       : {target} %\n"
-    output += "-"*60 + "\n"
-    output += f"REKOMENDASI AKSI   : {aksi}\n\n"
-
-    output += "="*60 + "\n"
-    output += "DETAIL PORTOFOLIO\n"
-    output += "="*60 + "\n"
-
-    header = f"{'Kode':<6}{'Lot':>6}{'Harga Beli':>12}{'Nilai Beli':>15}" \
-             f"{'Harga Now':>12}{'Nilai Now':>15}{'G/L Rp':>15}{'G/L %':>8}"
-    output += header + "\n"
-    output += "-"*90 + "\n"
-
-    for _, r in df.iterrows():
-        output += (
-            f"{r['Kode']:<6}{r['Lot']:>6}"
-            f"{r['Harga Beli']:>12,.0f}{r['Nilai Beli']:>15,.0f}"
-            f"{r['Harga Now']:>12,.0f}{r['Nilai Now']:>15,.0f}"
-            f"{r['Gain']:>15,.0f}"
-            f"{r['Gain %']:>8.2f}%\n"
-        )
-
-    output += "-"*90 + "\n"
-
-    total_gain = total_now - total_beli
-    total_gain_pct = total_gain / total_beli * 100 if total_beli else 0
-
-    output += (
-        f"{'TOTAL':<6}"
-        f"{'':>6}"
-        f"{'':>12}"
-        f"{total_beli:>15,.0f}"
-        f"{'':>12}"
-        f"{total_now:>15,.0f}"
-        f"{total_gain:>15,.0f}"
-        f"{total_gain_pct:>8.2f}%\n\n"
-    )
-
-    output += "PORTOFOLIO BOBOT (%)\n"
-
-    BAR_MAX = 40
-    batas_pos = round(MAX_BOBOT_SAHAM / 100 * BAR_MAX)
-
-    for _, r in df.sort_values("Bobot", ascending=False).iterrows():
-        panjang = round(r["Bobot"] / 100 * BAR_MAX)
-        panjang = max(panjang, 1) if r["Bobot"] > 0 else 0
-
-        bar = ""
-        for i in range(BAR_MAX):
-            if i == batas_pos:
-                bar += "|"
-            elif i < panjang:
-                bar += "="
-            else:
-                bar += " "
-
-        output += f"{r['Kode']:<6} |{bar}| {r['Bobot']:>6.2f}%\n"
-
-    output += f"\nBatas normal per saham : {MAX_BOBOT_SAHAM:.1f}%\n"
+    output += "📊 GANDA DASHBOARD INVESTASI\n\n"
+    output += f"Update : {now_str}\n"
+    output += f"IHSG   : {ihsg:,.2f}\n"
+    output += f"Kondisi: {kondisi}\n"
+    output += f"Buffett: {buffett:.2f}%\n\n"
+    output += f"Saham  : {rupiah(total_now)}\n"
+    output += f"Cash   : {rupiah(cash)}\n"
+    output += f"Total  : {rupiah(total_porto)}\n\n"
+    output += f"Porsi Saham : {porsi_saham:.2f}%\n"
+    output += f"Target      : {target}%\n"
+    output += f"REKOMENDASI  : {aksi}\n"
 
     return output
 
 # ============================================================
-# WEBHOOK
+# ROUTES
 # ============================================================
 
-@app.route("/", methods=["POST"])
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot aktif 🚀"
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
-    text = data["message"]["text"]
+    data = request.get_json()
 
-    if text == "/dashboard":
-        hasil = generate_dashboard()
-        kirim_telegram(hasil)
+    if data and "message" in data:
+        message = data["message"]
+        text = message.get("text", "")
 
-    return "ok"
+        if text == "/dashboard":
+            hasil = generate_dashboard()
+            kirim_telegram(hasil)
+
+    return "OK"
 
 # ============================================================
-# RUN
+# RUN LOCAL (Railway pakai gunicorn)
 # ============================================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    PORT = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=PORT)
