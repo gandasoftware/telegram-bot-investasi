@@ -1,5 +1,5 @@
 # ============================================================
-# TELEGRAM DASHBOARD BOT (SIMPLE VERSION)
+# GANDA DASHBOARD INVESTASI - TELEGRAM BOT
 # COMMAND: /dashboard
 # ============================================================
 
@@ -11,11 +11,10 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ============================================================
-# CONFIG (ambil dari Railway Variables)
+# CONFIG
 # ============================================================
 
-TOKEN = os.getenv("TOKEN")
-
+TOKEN = os.getenv("TOKEN")  # Ambil dari Railway Variables
 EXCEL_FILE = "portfolio.xlsx"
 
 # ============================================================
@@ -47,13 +46,12 @@ def get_ihsg():
         return 0.0
 
 # ============================================================
-# DASHBOARD FUNCTION
+# COMMAND /dashboard
 # ============================================================
 
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
-        # LOAD CONFIG
         config_df = pd.read_excel(EXCEL_FILE, sheet_name="Config")
         config = dict(zip(config_df["Parameter"], config_df["Value"]))
 
@@ -61,7 +59,6 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         MARKET_CAP_IDX = to_float(config.get("MARKET_CAP_IDX_USD", 8e11))
         MAX_BOBOT_SAHAM = to_float(config.get("MAX_BOBOT_SAHAM", 20))
 
-        # LOAD DATA
         saham_df = pd.read_excel(EXCEL_FILE, sheet_name="Saham")
         cash_df = pd.read_excel(EXCEL_FILE, sheet_name="Cash")
         cash = float(pd.to_numeric(cash_df.iloc[:,1], errors="coerce").dropna().iloc[-1])
@@ -100,8 +97,8 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         total_porto = total_now + cash
         porsi_saham = total_now / total_porto * 100 if total_porto else 0
-        porsi_cash = 100 - porsi_saham
         buffett = MARKET_CAP_IDX / GDP_INDONESIA * 100
+        ihsg_last = get_ihsg()
 
         if buffett < 60:
             kondisi_pasar = "MURAH"
@@ -114,25 +111,31 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_buffett = 65
 
         aksi = "TAMBAH SAHAM" if porsi_saham < target_buffett else "TAHAN / REBALANCE"
-        ihsg_last = get_ihsg()
 
+        WIDTH = 60
         now_str = datetime.now().strftime("%d %b %Y %H:%M")
 
         output = ""
-        output += "GANDA DASHBOARD INVESTASI\n"
-        output += "------------------------------------\n"
-        output += f"Analisa : {now_str}\n"
-        output += f"IHSG    : {ihsg_last:,.2f}\n"
-        output += f"Kondisi : {kondisi_pasar}\n"
-        output += f"Buffett : {buffett:.2f}%\n\n"
+        output += "="*WIDTH + "\n"
+        output += "GANDA DASHBOARD INVESTASI".center(WIDTH) + "\n"
+        output += "="*WIDTH + "\n\n"
 
-        output += f"Total Saham : {rupiah(total_now)}\n"
-        output += f"Cash        : {rupiah(cash)}\n"
-        output += f"Total       : {rupiah(total_porto)}\n\n"
+        output += f"Analisa dijalankan : {now_str}\n"
+        output += "-"*WIDTH + "\n"
+        output += f"IHSG Terakhir      : {ihsg_last:,.2f}\n"
+        output += f"Kondisi Pasar      : {kondisi_pasar}\n"
+        output += f"Buffett Indicator  : {buffett:.2f} %\n"
 
-        output += f"Porsi Saham : {porsi_saham:.2f}%\n"
-        output += f"Target      : {target_buffett}%\n"
-        output += f"Rekomendasi : {aksi}\n"
+        output += "-"*WIDTH + "\n"
+        output += f"Total Saham        : {rupiah(total_now)}\n"
+        output += f"Cash               : {rupiah(cash)}\n"
+        output += f"Total Portofolio   : {rupiah(total_porto)}\n"
+
+        output += "-"*WIDTH + "\n"
+        output += f"Porsi Saham        : {porsi_saham:.2f} %\n"
+        output += f"Target Saham       : {target_buffett} %\n"
+        output += "-"*WIDTH + "\n"
+        output += f"REKOMENDASI AKSI   : {aksi}\n\n"
 
         await update.message.reply_text(f"<pre>{output}</pre>", parse_mode="HTML")
 
