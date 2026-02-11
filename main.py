@@ -1,25 +1,21 @@
 # ============================================================
-# GANDA TELEGRAM BUFFETT DASHBOARD – FULL VERSION
-# Trigger : /dashboard
-# Railway Ready
+# TELEGRAM BUFFETT DASHBOARD – FULL VERSION
+# Trigger: /dashboard
 # ============================================================
 
-import os
 import pandas as pd
 import yfinance as yf
 import requests
-from flask import Flask, request
+import time
 from datetime import datetime
+from flask import Flask, request
 
 # ============================================================
-# ENV VARIABLES (RAILWAY)
+# CONFIG TELEGRAM
 # ============================================================
 
-TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-if not TOKEN or not CHAT_ID:
-    raise ValueError("TOKEN atau CHAT_ID belum diset di Railway")
+TOKEN = "ISI_TOKEN_KAMU"
+CHAT_ID = "ISI_CHAT_ID_KAMU"
 
 app = Flask(__name__)
 
@@ -70,7 +66,7 @@ def get_ihsg():
         return 0.0
 
 # ============================================================
-# DASHBOARD ENGINE
+# DASHBOARD FUNCTION
 # ============================================================
 
 def generate_dashboard():
@@ -98,6 +94,7 @@ def generate_dashboard():
         kode = r["Kode"]
         lot = int(r["Lot"])
         harga_beli = to_float(r["Harga Beli"])
+
         harga_now = get_price(f"{kode}.JK", fallback=harga_beli)
 
         nilai_beli = harga_beli * lot * 100
@@ -124,6 +121,7 @@ def generate_dashboard():
 
     total_porto = total_now + cash
     porsi_saham = total_now / total_porto * 100 if total_porto else 0
+    porsi_cash = 100 - porsi_saham
     buffett = MARKET_CAP_IDX / GDP_INDONESIA * 100
 
     if buffett < 60:
@@ -137,111 +135,48 @@ def generate_dashboard():
         target_buffett = 65
 
     aksi = "TAMBAH SAHAM" if porsi_saham < target_buffett - 2 else "TAHAN / REBALANCE"
+
     ihsg_last = get_ihsg()
     now_str = datetime.now().strftime("%d %b %Y %H:%M")
 
+    WIDTH = 60
     output = ""
 
-    # ============================================================
-    # HEADER
-    # ============================================================
-
-    output += "="*60 + "\n"
-    output += "GANDA DASHBOARD INVESTASI".center(60) + "\n"
-    output += "="*60 + "\n\n"
+    output += "="*WIDTH + "\n"
+    output += "GANDA DASHBOARD INVESTASI".center(WIDTH) + "\n"
+    output += "="*WIDTH + "\n\n"
 
     output += f"Analisa dijalankan : {now_str}\n"
-    output += "-"*60 + "\n"
+    output += "-"*WIDTH + "\n"
     output += f"IHSG Terakhir      : {ihsg_last:,.2f}\n"
     output += f"Kondisi Pasar      : {kondisi_pasar}\n"
     output += f"Buffett Indicator  : {buffett:.2f} %\n"
-    output += "-"*60 + "\n"
+    output += "-"*WIDTH + "\n"
     output += f"Total Saham        : {rupiah(total_now)}\n"
     output += f"Cash               : {rupiah(cash)}\n"
     output += f"Total Portofolio   : {rupiah(total_porto)}\n"
-    output += "-"*60 + "\n"
+    output += "-"*WIDTH + "\n"
     output += f"Porsi Saham        : {porsi_saham:.2f} %\n"
     output += f"Target Saham       : {target_buffett} %\n"
-    output += "-"*60 + "\n"
-    output += f"REKOMENDASI AKSI   : {aksi}\n"
+    output += "-"*WIDTH + "\n"
+    output += f"REKOMENDASI AKSI   : {aksi}\n\n"
 
-    # ============================================================
-    # DETAIL TABLE (90 CHAR STYLE)
-    # ============================================================
-
-    output += "\n" + "="*90 + "\n"
-
-    header = f"{'Kode':<6}{'Lot':>6}{'Harga Beli':>12}{'Nilai Beli':>15}" \
-             f"{'Harga Now':>12}{'Nilai Now':>15}{'G/L Rp':>15}{'G/L %':>8}"
-
-    output += header + "\n"
-    output += "="*90 + "\n"
+    output += "="*WIDTH + "\n"
+    output += "DETAIL PORTOFOLIO\n"
+    output += "="*WIDTH + "\n"
 
     for _, r in df.iterrows():
-
-        simbol = "🟢" if r["Gain"] >= 0 else "🔴"
-
         output += (
-            f"{r['Kode']:<6}{r['Lot']:>6}"
-            f"{r['Harga Beli']:>12,.0f}{r['Nilai Beli']:>15,.0f}"
-            f"{r['Harga Now']:>12,.0f}{r['Nilai Now']:>15,.0f}"
-            f"{r['Gain']:>15,.0f}"
-            f"{r['Gain %']:>8.2f}% {simbol}\n"
+            f"{r['Kode']} | "
+            f"Lot:{r['Lot']} | "
+            f"Now:{r['Harga Now']:,.0f} | "
+            f"G/L:{r['Gain']:,.0f} ({r['Gain %']:.2f}%)\n"
         )
 
-    output += "-"*90 + "\n"
-
+    output += "\nTOTAL GAIN : "
     total_gain = total_now - total_beli
     total_gain_pct = total_gain / total_beli * 100 if total_beli else 0
-
-    output += (
-        f"{'TOTAL':<6}"
-        f"{'':>6}"
-        f"{'':>12}"
-        f"{total_beli:>15,.0f}"
-        f"{'':>12}"
-        f"{total_now:>15,.0f}"
-        f"{total_gain:>15,.0f}"
-        f"{total_gain_pct:>8.2f}%\n"
-    )
-
-    # ============================================================
-    # BAR BOBOT
-    # ============================================================
-
-    output += "\n" + "="*90 + "\n"
-    output += "PORTOFOLIO BOBOT (%)\n"
-    output += "="*90 + "\n"
-
-    BAR_MAX = 40
-    batas_pos = round(MAX_BOBOT_SAHAM / 100 * BAR_MAX)
-
-    for _, r in df.sort_values("Bobot", ascending=False).iterrows():
-
-        panjang = round(r["Bobot"] / 100 * BAR_MAX)
-        panjang = max(panjang, 1) if r["Bobot"] > 0 else 0
-
-        bar = ""
-        for i in range(BAR_MAX):
-            if i == batas_pos:
-                bar += "|"
-            elif i < panjang:
-                bar += "="
-            else:
-                bar += " "
-
-        if r["Bobot"] <= MAX_BOBOT_SAHAM:
-            status = "Normal 🟢"
-        elif r["Bobot"] <= 30:
-            status = "Konsentrasi Tinggi 🟡"
-        else:
-            status = "Sangat Terkonsentrasi 🔴"
-
-        output += f"{r['Kode']:<6} |{bar}| {r['Bobot']:>6.2f}%  {status}\n"
-
-    output += "\n"
-    output += f"Batas normal per saham : {MAX_BOBOT_SAHAM:.1f}%\n"
-    output += "Zona >30% : Konsentrasi sangat tinggi (high conviction)\n"
+    output += f"{rupiah(total_gain)} ({total_gain_pct:.2f}%)\n"
 
     return output
 
